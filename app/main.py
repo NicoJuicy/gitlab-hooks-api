@@ -489,7 +489,7 @@ async def receive_gitlab_webhook(request: Request):
         # For merge request events, try target_branch or source_branch
         ref = None
         if body.get("merge_request"):
-            ref = body.get("merge_request", {}).get("target_branch") or body.get("merge_request", {}).get("source_branch")
+            ref = body.get("merge_request", {}).get("source_branch")
         elif body.get("ref"):
             ref = body.get("ref")
         elif body.get("object_attributes", {}).get("ref"):
