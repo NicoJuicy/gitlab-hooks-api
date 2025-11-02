@@ -487,28 +487,60 @@ async def receive_gitlab_webhook(request: Request):
         
         # Extract ref from webhook payload
         # For merge request events, try target_branch or source_branch
-        ref = None
-        if body.get("merge_request"):
-            ref = body.get("merge_request", {}).get("source_branch")
-        elif body.get("ref"):
-            ref = body.get("ref")
-        elif body.get("object_attributes", {}).get("ref"):
-            ref = body.get("object_attributes", {}).get("ref")
-        
+        ref = (
+            body.get("merge_request", {}).get("source_branch")
+            or body.get("ref")
+            or body.get("object_attributes", {}).get("ref")
+            or body.get("project", {}).get("default_branch")
+        )
         if not ref:
-            print("[Webhook] Ref not found in webhook payload, taking default branch")
-            ref = body.get("project", {}).get("default_branch")
-            if not ref:
-                print("[Webhook] Default branch not found in webhook payload.")
-                return {"found": found}
-        
-        # Extract variables from webhook body
-        # These can be customized based on what data you want to pass
-        input_event = body.get("event_name", body.get("object_kind", ""))
-        flow_context = json.dumps(body)  # Pass entire webhook as JSON context
-        ai_flow_input = note  # Use the comment text as input
-        
-        # POST to GitLab trigger pipeline API
+            print("[Webhook] Ref not found in webhook payload.")
+            return {"found": False}
+
+        # --- Extract only relevant info for the AI ---
+        attrs = body.get("object_attributes", {})
+        mr = body.get("merge_request", {})
+        user = body.get("user", {})
+        project = body.get("project", {})
+        repo = body.get("repository", {})
+        last_commit = mr.get("last_commit", {})
+
+        flow_context = {
+            "event": body.get("event_name", body.get("object_kind", "")),
+            "user": {
+                "name": user.get("name"),
+                "username": user.get("username"),
+                "email": user.get("email"),
+            },
+            "project": {
+                "id": project.get("id"),
+                "name": project.get("name"),
+                "path_with_namespace": project.get("path_with_namespace"),
+                "web_url": project.get("web_url"),
+            },
+            "merge_request": {
+                "iid": mr.get("iid"),
+                "title": mr.get("title"),
+                "source_branch": mr.get("source_branch"),
+                "target_branch": mr.get("target_branch"),
+                "url": mr.get("url") or mr.get("web_url"),
+            },
+            "note": {
+                "text": attrs.get("note"),
+                "url": attrs.get("url"),
+                "action": attrs.get("action"),
+                "created_at": attrs.get("created_at"),
+            },
+            "commit": {
+                "id": last_commit.get("id"),
+                "message": last_commit.get("message"),
+            },
+        }
+
+        ai_flow_input = attrs.get("note") or ""
+        input_event = flow_context["event"]
+
+        # --- Send pipeline trigger ---
         trigger_url = f"https://git.the-devs.com/api/v4/projects/{project_id}/trigger/pipeline"
         try:
             async with httpx.AsyncClient() as client:
@@ -518,12 +550,13 @@ async def receive_gitlab_webhook(request: Request):
                         "token": trigger_token,
                         "ref": ref,
                         "variables[AI_FLOW_EVENT]": input_event,
-                        "variables[AI_FLOW_CONTEXT]": flow_context,
+                        "variables[AI_FLOW_CONTEXT]": json.dumps(flow_context),
                         "variables[AI_FLOW_INPUT]": ai_flow_input,
                     },
                 )
                 response.raise_for_status()
-                print(f"[Webhook] Successfully triggered pipeline for project {project_id}.")
+                print(f"[Webhook] Pipeline triggered for {project_id} on {ref}")
+                return response.json()
         except httpx.HTTPStatusError as e:
             error_msg = f"[Webhook] Error triggering pipeline: {e.response.status_code} {e.response.reason_phrase}"
             try:
