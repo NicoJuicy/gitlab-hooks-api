@@ -375,17 +375,41 @@ async def register_webhooks(
         trigger_tokens_for_db = {
             str(project_id): token for project_id, token in trigger_tokens.items()
         }
+        
+        # Fetch existing webhook data to merge trigger_tokens instead of overwriting
+        key = f"{request.group_id}:{request.name}"
+        existing_webhook = await webhooks_collection.find_one({"_id": key})
+        existing_trigger_tokens = {}
+        existing_registered = []
+        existing_updated = []
+        existing_skipped = []
+        
+        if existing_webhook and existing_webhook.get("data"):
+            existing_data = existing_webhook["data"]
+            existing_trigger_tokens = existing_data.get("trigger_tokens", {})
+            existing_registered = existing_data.get("registered", [])
+            existing_updated = existing_data.get("updated", [])
+            existing_skipped = existing_data.get("skipped", [])
+        
+        # Merge trigger_tokens (new ones take precedence, but don't lose existing ones)
+        merged_trigger_tokens = {**existing_trigger_tokens, **trigger_tokens_for_db}
+        
+        # Merge lists (union, removing duplicates, sorted for consistency)
+        merged_registered = sorted(list(set(existing_registered + registered)))
+        merged_updated = sorted(list(set(existing_updated + updated)))
+        merged_skipped = sorted(list(set(existing_skipped + skipped)))
+        
         await save_or_update_webhook(
             request.group_id,
             request.name,
             {
                 "url": request.webhook_url,
-                "registered": registered,
-                "updated": updated,
-                "skipped": skipped,
+                "registered": merged_registered,
+                "updated": merged_updated,
+                "skipped": merged_skipped,
                 "webhook_token": request.webhook_token,
                 "target_trigger_url": request.target_trigger_url,
-                "trigger_tokens": trigger_tokens_for_db,
+                "trigger_tokens": merged_trigger_tokens,
             },
         )
 
