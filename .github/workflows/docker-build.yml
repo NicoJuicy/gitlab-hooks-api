@@ -3,6 +3,8 @@ name: Build and Test Docker Image
 on:
   push:
     branches: [ main, master ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ main, master ]
 
@@ -91,13 +93,87 @@ jobs:
     - name: Save Docker image as artifact
       if: github.event_name == 'push'
       run: |
+        echo "Saving Docker image..."
         docker save gitlab-hooks:${{ github.sha }} | gzip > gitlab-hooks-image.tar.gz
+        ls -lh gitlab-hooks-image.tar.gz
+        if [ ! -f gitlab-hooks-image.tar.gz ]; then
+          echo "Error: Docker image file was not created"
+          exit 1
+        fi
+        echo "Docker image saved successfully ($(du -h gitlab-hooks-image.tar.gz | cut -f1))"
     
     - name: Upload Docker artifact
       if: github.event_name == 'push'
       uses: actions/upload-artifact@v4
       with:
-        name: docker-image
+        name: docker-image-${{ github.sha }}
         path: gitlab-hooks-image.tar.gz
-        retention-days: 7
+        retention-days: 30
+        if-no-files-found: error
+    
+    - name: Summary
+      if: github.event_name == 'push'
+      run: |
+        echo "## 🐳 Docker Image Artifact Created" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Docker image built and tested successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Artifact Name:** \`docker-image-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**How to download:**" >> $GITHUB_STEP_SUMMARY
+        echo "1. Go to the [Actions tab](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+        echo "2. Click on this workflow run" >> $GITHUB_STEP_SUMMARY
+        echo "3. Scroll down to the 'Artifacts' section" >> $GITHUB_STEP_SUMMARY
+        echo "4. Download \`docker-image-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**To load the image:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "gunzip -c gitlab-hooks-image.tar.gz | docker load" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+    
+    outputs:
+      image-tag: ${{ github.sha }}
+      artifact-name: docker-image-${{ github.sha }}
+
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download Docker artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image-${{ github.sha }}
+        path: ./
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: gitlab-hooks-image.tar.gz
+        body: |
+          ## Docker Image Release
+          
+          **Tag:** ${{ github.ref_name }}
+          **Commit:** ${{ github.sha }}
+          
+          ### Installation
+          
+          Download the Docker image and load it:
+          ```bash
+          gunzip -c gitlab-hooks-image.tar.gz | docker load
+          ```
+          
+          Then run:
+          ```bash
+          docker run -p 8000:8000 gitlab-hooks:${{ github.sha }}
+          ```
+        draft: false
+        prerelease: false
+        tag_name: ${{ github.ref_name }}
 
