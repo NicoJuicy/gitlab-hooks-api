@@ -19,15 +19,25 @@ class GitLabClient:
         self.base_url = base_url.rstrip("/")
         self.api_base = f"{self.base_url}/api/v4"
 
-    async def get_projects(self, token: str, group_id: int) -> list[dict]:
+    async def get_projects(
+        self,
+        token: str,
+        group_id: int,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+    ) -> dict:
         """Fetch projects from a specific GitLab group.
 
         Args:
             token: GitLab personal access token
             group_id: GitLab group ID to filter projects
+            page: Page number (default: 1, or None to return all pages)
+            per_page: Number of items per page (default: 20, max: 100)
 
         Returns:
-            List of project dictionaries belonging to the specified group and its nested groups
+            Dictionary containing:
+            - data: List of project dictionaries belonging to the specified group and its nested groups
+            - pagination: Dictionary with pagination metadata (total, total_pages, page, per_page, next_page, prev_page)
 
         Raises:
             GitLabAuthenticationError: If authentication fails
@@ -36,6 +46,12 @@ class GitLabClient:
         url = f"{self.api_base}/groups/{group_id}/projects"
         headers = {"Authorization": f"Bearer {token}"}
         params = {"include_subgroups": True}
+        
+        # Add pagination parameters if provided
+        if page is not None:
+            params["page"] = page
+        if per_page is not None:
+            params["per_page"] = per_page
 
         async with httpx.AsyncClient() as client:
             try:
@@ -43,7 +59,26 @@ class GitLabClient:
                     url, headers=headers, params=params, timeout=30.0
                 )
                 response.raise_for_status()
-                return response.json()
+                
+                projects = response.json()
+                
+                # Extract pagination metadata from response headers (GitLab API standard)
+                next_page_header = response.headers.get("X-Next-Page")
+                prev_page_header = response.headers.get("X-Prev-Page")
+                
+                pagination = {
+                    "total": int(response.headers.get("X-Total", len(projects))),
+                    "total_pages": int(response.headers.get("X-Total-Pages", 1)),
+                    "page": int(response.headers.get("X-Page", page or 1)),
+                    "per_page": int(response.headers.get("X-Per-Page", per_page or 20)),
+                    "next_page": int(next_page_header) if next_page_header else None,
+                    "prev_page": int(prev_page_header) if prev_page_header else None,
+                }
+                
+                return {
+                    "data": projects,
+                    "pagination": pagination,
+                }
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 401:
                     raise GitLabAuthenticationError(

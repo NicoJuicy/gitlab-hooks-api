@@ -107,16 +107,22 @@ async def health():
 @app.get("/gitlab/projects")
 async def get_gitlab_projects(
     group_id: int,
+    page: Optional[int] = None,
+    per_page: Optional[int] = None,
     credentials: HTTPBasicCredentials = Depends(security),
 ):
     """Fetch GitLab projects from a specific group using a personal access token.
 
     Args:
         group_id: Required GitLab group ID to filter projects
+        page: Page number (default: 1, or None to use GitLab default)
+        per_page: Number of items per page (default: 20, max: 100, or None to use GitLab default)
         credentials: Basic Auth credentials where password is the GitLab PAT
 
     Returns:
-        List of GitLab projects belonging to the specified group
+        Dictionary containing:
+        - data: List of GitLab projects belonging to the specified group
+        - pagination: Dictionary with pagination metadata (total, total_pages, page, per_page, next_page, prev_page)
 
     Raises:
         HTTPException: If authentication fails or API request fails
@@ -125,8 +131,10 @@ async def get_gitlab_projects(
     token = credentials.password
 
     try:
-        projects = await gitlab_client.get_projects(token, group_id=group_id)
-        return projects
+        result = await gitlab_client.get_projects(
+            token, group_id=group_id, page=page, per_page=per_page
+        )
+        return result
     except GitLabAuthenticationError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except GitLabAPIError as e:
@@ -137,19 +145,23 @@ async def get_gitlab_projects(
 @app.post("/gitlab/register-webhooks")
 async def register_webhooks(
     request: WebhookRegistrationRequest,
+    page: Optional[int] = None,
+    per_page: Optional[int] = None,
     credentials: HTTPBasicCredentials = Depends(security),
 ):
-    """Register webhooks (autowebhook) for all repositories under a given group.
+    """Register webhooks (autowebhook) for repositories under a given group.
 
     If a webhook with the same URL already exists, its settings will be compared
     with the provided parameters and updated if they differ.
 
     Args:
         request: Request body containing group_id, webhook_url, and trigger event settings
+        page: Page number (default: None to fetch all pages, or specify to process a specific page)
+        per_page: Number of items per page (default: 100 when fetching all pages, or None to use GitLab default)
         credentials: Basic Auth credentials where password is the GitLab PAT
 
     Returns:
-        JSON summary with registered, updated, and skipped project IDs
+        JSON summary with registered, updated, and skipped project IDs, plus pagination metadata
 
     Raises:
         HTTPException: If authentication fails or API request fails
@@ -199,8 +211,34 @@ async def register_webhooks(
     }
 
     try:
-        # Get all projects (including nested ones) for the group
-        projects = await gitlab_client.get_projects(token, group_id=request.group_id)
+        # Fetch projects with pagination support
+        all_projects = []
+        pagination_info = None
+        
+        if page is not None:
+            # Fetch specific page
+            result = await gitlab_client.get_projects(
+                token, group_id=request.group_id, page=page, per_page=per_page
+            )
+            all_projects = result["data"]
+            pagination_info = result["pagination"]
+        else:
+            # Fetch all pages automatically
+            current_page = 1
+            per_page_value = per_page or 100  # Use 100 (max) when fetching all pages
+            
+            while True:
+                result = await gitlab_client.get_projects(
+                    token, group_id=request.group_id, page=current_page, per_page=per_page_value
+                )
+                page_projects = result["data"]
+                all_projects.extend(page_projects)
+                pagination_info = result["pagination"]
+                
+                # Check if there are more pages
+                if pagination_info.get("next_page") is None:
+                    break
+                current_page = pagination_info["next_page"]
 
         registered = []
         updated = []
@@ -208,7 +246,7 @@ async def register_webhooks(
         trigger_tokens = {}  # Store project_id -> trigger_token mapping
 
         # Check each project for existing autowebhook
-        for project in projects:
+        for project in all_projects:
             project_id = project["id"]
 
             try:
@@ -351,11 +389,21 @@ async def register_webhooks(
             },
         )
 
+        # Update pagination info for "all pages" case
+        if page is None and pagination_info:
+            # When fetching all pages, update pagination to reflect total processing
+            pagination_info = {
+                **pagination_info,
+                "page": None,  # Indicates all pages were processed
+                "total_processed": len(all_projects),
+            }
+
         return {
             "registered": registered,
             "updated": updated,
             "skipped": skipped,
             "trigger_tokens": trigger_tokens,
+            "pagination": pagination_info,
         }
 
     except GitLabAuthenticationError as e:
