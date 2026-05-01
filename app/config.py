@@ -19,7 +19,7 @@ OPENCLAW_WEBHOOK_SECRET = config("OPENCLAW_WEBHOOK_SECRET", default="")
 OPENCLAW_GENERAL_PROMPT = config("OPENCLAW_GENERAL_PROMPT", default="""You are an autonomous engineering agent triggered by a GitLab webhook.
 Scope your actions to the GitLab project and MR that triggered the webhook.
 
-You MUST use GitLab MCP as the source of truth for all GitLab actions:
+Use GitLab API as the source of truth for all GitLab actions:
 - read issues
 - read merge requests
 - read comments / notes
